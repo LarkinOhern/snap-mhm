@@ -650,9 +650,10 @@ elif section == "Food Access Map":
             )
 
             st.markdown("**Access**")
-            filt_wknd = st.checkbox("Open weekends")
-            filt_eve  = st.checkbox("Open evenings")
-            filt_snap = st.checkbox("SNAP enrollment assist")
+            filt_wknd      = st.checkbox("Open weekends")
+            filt_eve       = st.checkbox("Open evenings")
+            filt_snap_cpp  = st.checkbox("SNAP assist (CPP verified)")
+            filt_snap_inf  = st.checkbox("SNAP assist (inferred from org name)")
 
             st.markdown("**Contact info**")
             filt_phone   = st.checkbox("Has phone number")
@@ -677,8 +678,12 @@ elif section == "Food Access Map":
                 filt = filt[filt["open_weekends"] == 1]
             if filt_eve:
                 filt = filt[filt["open_evenings"] == 1]
-            if filt_snap:
+            if filt_snap_cpp and filt_snap_inf:
                 filt = filt[filt["snap_enrollment_likely"] == 1]
+            elif filt_snap_cpp:
+                filt = filt[filt["snap_source"] == "CPP verified"]
+            elif filt_snap_inf:
+                filt = filt[filt["snap_source"] == "heuristic"]
             if filt_phone:
                 filt = filt[filt["phone"].notna()]
             if filt_website:
@@ -686,7 +691,8 @@ elif section == "Food Access Map":
 
             n_match = len(filt)
             any_filter = bool(sel_regions or sel_counties or sel_types or
-                              filt_wknd or filt_eve or filt_snap or filt_phone or filt_website)
+                              filt_wknd or filt_eve or filt_snap_cpp or filt_snap_inf
+                              or filt_phone or filt_website)
             st.metric(
                 "Matching Sites", f"{n_match:,}",
                 delta=f"of {len(pantries_df):,} total" if any_filter else "no filters active",
