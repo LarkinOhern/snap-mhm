@@ -728,7 +728,11 @@ elif section == "Food Access Map":
 
                         wknd_tag = sub["open_weekends"].apply(lambda v: " · wknds" if v else "")
                         eve_tag  = sub["open_evenings"].apply(lambda v: " · eves"  if v else "")
-                        snap_tag = sub["snap_enrollment_likely"].apply(lambda v: "Yes" if v else "No")
+                        def _snap_tag(r):
+                            if r.get("snap_source") == "CPP verified":
+                                return "Yes (CPP verified)"
+                            return "Yes" if r["snap_enrollment_likely"] else "No"
+                        snap_tag = sub.apply(_snap_tag, axis=1)
                         ph_str   = sub["phone"].apply(lambda v: f"<br>Phone: {v}" if pd.notna(v) else "")
                         rt_str   = sub["google_rating"].apply(lambda v: f"<br>Rating: {v:.1f}" if pd.notna(v) else "")
                         sub["hover"] = (
@@ -800,17 +804,25 @@ elif section == "Food Access Map":
             else:
                 results = filt[[
                     "primary_county", "region_name", "name", "org_type",
-                    "snap_enrollment_likely", "open_weekends", "open_evenings",
+                    "snap_enrollment_likely", "snap_source", "open_weekends", "open_evenings",
                     "days_open_count", "phone", "website", "hours_text",
                     "google_review_count", "google_rating", "address",
                 ]].copy().sort_values(["primary_county", "org_type", "name"]).reset_index(drop=True)
                 results.columns = [
                     "County", "Region", "Name", "Type",
-                    "SNAP Assist", "Open Wknd", "Open Eve",
+                    "_snap_flag", "_snap_src", "Open Wknd", "Open Eve",
                     "Days/Wk", "Phone", "Website", "Hours",
                     "Reviews", "Rating", "Address",
                 ]
-                results["SNAP Assist"] = results["SNAP Assist"].apply(lambda v: "Yes" if v else "")
+                def _snap_label(r):
+                    if r["_snap_src"] == "CPP verified":
+                        return "Yes (CPP verified)"
+                    return "Yes" if r["_snap_flag"] else ""
+                results["SNAP Assist"] = results.apply(_snap_label, axis=1)
+                results = results.drop(columns=["_snap_flag", "_snap_src"])
+                results = results[["County", "Region", "Name", "Type", "SNAP Assist",
+                                   "Open Wknd", "Open Eve", "Days/Wk", "Phone",
+                                   "Website", "Hours", "Reviews", "Rating", "Address"]]
                 results["Open Wknd"]   = results["Open Wknd"].apply(lambda v: "Yes" if v else "")
                 results["Open Eve"]    = results["Open Eve"].apply(lambda v: "Yes" if v else "")
                 results["Days/Wk"]     = results["Days/Wk"].apply(lambda v: f"{int(v)}" if pd.notna(v) else "—")
