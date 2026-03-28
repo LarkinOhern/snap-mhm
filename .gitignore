@@ -6,3 +6,9 @@ snap_mhm_counties_2022_aug2025.xlsx
 streamlit.log
 .streamlit/
 .env
+APIKey.txt
+pantry_cache/
+food_pantry_raw.xlsx
+food_pantry_catalog.xlsx
+chr_food_insecurity_texas.xlsx
+usda_fara_texas_county.xlsx

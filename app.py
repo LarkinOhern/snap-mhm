@@ -18,6 +18,16 @@ st.set_page_config(
 )
 
 # ── Texas county FIPS codes for all 74 MHM counties ──────────────────────────
+ORG_COLORS = {
+    "Food Bank / Warehouse":    "#1f4e79",
+    "Faith-Based Pantry":       "#8e44ad",
+    "Community Organization":   "#1a7a4a",
+    "Government Program":       "#7f8c8d",
+    "Large Nonprofit":          "#d35400",
+    "Mobile Distribution":      "#c0392b",
+    "Other Nonprofit / Pantry": "#2980b9",
+}
+
 COUNTY_FIPS = {
     "Aransas":"48007","Atascosa":"48013","Bandera":"48019","Bastrop":"48021",
     "Bee":"48025","Bexar":"48029","Blanco":"48031","Brooks":"48047",
@@ -68,9 +78,27 @@ def load_geojson():
     except Exception:
         return None
 
+@st.cache_data
+def load_pantries():
+    try:
+        return pd.read_excel("food_pantry_catalog_clean.xlsx")
+    except Exception:
+        return None
+
+@st.cache_data
+def load_gap():
+    try:
+        gap = pd.read_excel("food_access_county.xlsx")
+        gap["county_fips"] = gap["county"].map(COUNTY_FIPS)
+        return gap
+    except Exception:
+        return None
+
 df               = load()
 timeliness_raw   = load_timeliness()
 counties_geojson = load_geojson()
+pantries_df      = load_pantries()
+gap_df           = load_gap()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -115,6 +143,7 @@ with st.sidebar:
         "Service Area Overview",
         "County Trends",
         "Program Officer Analysis",
+        "Food Access Map",
         "Admin Burden Analysis",
     ])
 
@@ -481,7 +510,370 @@ elif section == "Program Officer Analysis":
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 4: ADMIN BURDEN ANALYSIS
+# SECTION 4: FOOD ACCESS MAP
+# ═══════════════════════════════════════════════════════════════════════════════
+elif section == "Food Access Map":
+    st.title("Food Access & Pantry Coverage")
+    st.caption(
+        "639 verified food assistance sites across the 74-county MHM service area  "
+        "· Gap analysis enriched with USDA FARA and County Health Rankings 2024"
+    )
+
+    if pantries_df is None or gap_df is None:
+        st.error("Required data files not found. Run fetch_pantries.py and build_gap_analysis.py first.")
+        st.stop()
+
+    tab_map, tab_gaps, tab_region = st.tabs(["Pantry Map", "Coverage Gaps", "Regional Summary"])
+
+    # ── Shared data prep ──────────────────────────────────────────────────────
+    score_col = "gap_score_enriched" if "gap_score_enriched" in gap_df.columns else "gap_score"
+    gdf = gap_df.copy()
+    gdf["snap_enrolled_per_site_disp"] = gdf["snap_enrolled_per_site"].fillna(0)
+    if "food_insecurity_pct" not in gdf.columns:
+        gdf["food_insecurity_pct"] = float("nan")
+    gdf["food_insecurity_pct"] = pd.to_numeric(gdf["food_insecurity_pct"], errors="coerce")
+
+    def county_hover(r):
+        fi = f"{r['food_insecurity_pct']:.1f}%" if pd.notna(r.get("food_insecurity_pct")) else "N/A"
+        epa = f"{int(r['snap_enrolled_per_site']):,}" if pd.notna(r.get("snap_enrolled_per_site")) else "—"
+        return (
+            f"<b>{r['county']} County</b><br>"
+            f"Gap Score: {int(r[score_col])}<br>"
+            f"Food Insecurity: {fi}<br>"
+            f"SNAP Enrolled: {int(r['eligible_individuals']):,}<br>"
+            f"Pantry Sites: {int(r['total_sites'])}<br>"
+            f"SNAP Assist Sites: {int(r['snap_sites'])}<br>"
+            f"Enrolled / Site: {epa}"
+        )
+    gdf["hover_county"] = gdf.apply(county_hover, axis=1)
+
+    # ── TAB 1: MAP ─────────────────────────────────────────────────────────────
+    with tab_map:
+        # KPIs at the top
+        kc1, kc2, kc3, kc4, kc5 = st.columns(5)
+        with kc1:
+            st.metric("Pantry Sites", f"{len(pantries_df):,}")
+        with kc2:
+            st.metric("Zero-Site Counties", int((gap_df["total_sites"] == 0).sum()),
+                      delta="of 74 total", delta_color="off")
+        with kc3:
+            st.metric("No SNAP Site", int(gap_df["no_snap_site"].sum()),
+                      delta="counties", delta_color="off")
+        with kc4:
+            n_wknd = int(pantries_df["open_weekends"].sum())
+            pct_wknd = int(pantries_df["open_weekends"].mean() * 100)
+            st.metric("Open Weekends", n_wknd, delta=f"{pct_wknd}% of sites", delta_color="off")
+        with kc5:
+            n_eve = int(pantries_df["open_evenings"].sum())
+            pct_eve = int(pantries_df["open_evenings"].mean() * 100)
+            st.metric("Open Evenings", n_eve, delta=f"{pct_eve}% of sites", delta_color="off")
+
+        st.markdown("---")
+
+        # Map controls + gap score explanation
+        ctrl1, ctrl2 = st.columns([2, 1])
+        with ctrl1:
+            county_color_opt = st.radio(
+                "County shading",
+                ["Gap Score", "Food Insecurity %", "SNAP Enrolled / Site"],
+                horizontal=True,
+            )
+        with ctrl2:
+            show_pins = st.checkbox("Show pantry pins", value=True)
+
+        # Dynamic explanation + snapshot for the selected metric
+        _gap_info = {
+            "Gap Score": (
+                "**Gap Score** (0–10+) is a composite index of how underserved a county is. "
+                "Points are awarded for: no pantry sites (+4), too few sites for the enrolled population (+2), "
+                "no SNAP enrollment assistance (+2), more than 2,000 SNAP participants per site (+2), "
+                "less than 15% weekend coverage (+1), and food insecurity rate above 20% (+1).",
+                f"Critical (score \u22658): **{int((gdf[score_col] >= 8).sum())} counties**  \u00b7  "
+                f"High priority (\u22655): **{int((gdf[score_col] >= 5).sum())} counties**  \u00b7  "
+                f"Well-served (0): **{int((gdf[score_col] == 0).sum())} counties**",
+            ),
+            "Food Insecurity %": (
+                "**Food Insecurity Rate** is the share of residents who lack consistent access to enough food "
+                "(County Health Rankings 2024). The U.S. average is ~13%; rates above 20% signal severe community need.",
+                f"Service area avg: **{gdf['food_insecurity_pct'].mean():.1f}%**  \u00b7  "
+                f"Above 20%: **{int((gdf['food_insecurity_pct'] > 20).sum())} counties**  \u00b7  "
+                f"Highest: **{gdf.nlargest(1, 'food_insecurity_pct')['county'].values[0]} "
+                f"({gdf['food_insecurity_pct'].max():.1f}%)**",
+            ),
+            "SNAP Enrolled / Site": (
+                "**SNAP Enrolled per Site** measures how many SNAP participants each pantry site must serve on average. "
+                "Anything above ~1,000 suggests the site is overstretched; above 2,000 is a critical capacity gap. "
+                "Counties with no sites are shown as 0.",
+                f"Median: **{gdf['snap_enrolled_per_site'].median():,.0f} enrolled/site**  \u00b7  "
+                f"Above 2,000/site: **{int((gdf['snap_enrolled_per_site'] > 2000).sum())} counties**  \u00b7  "
+                f"No sites at all: **{int((gap_df['total_sites'] == 0).sum())} counties**",
+            ),
+        }
+        _desc, _snapshot = _gap_info[county_color_opt]
+        st.caption(_desc)
+        st.info(_snapshot)
+
+        color_cfg = {
+            "Gap Score":             (score_col,                    "Gap Score",    "YlOrRd", 0, 10),
+            "Food Insecurity %":     ("food_insecurity_pct",        "FI Rate %",    "YlOrRd", 8, 28),
+            "SNAP Enrolled / Site":  ("snap_enrolled_per_site_disp","Enrolled/Site","YlOrRd", 0, 4000),
+        }
+        color_col, color_title, cscale, zmin, zmax = color_cfg[county_color_opt]
+
+        if counties_geojson:
+            cdf = gdf[gdf["county_fips"].notna()].copy()
+
+            fig_map = go.Figure()
+
+            # County fill layer
+            fig_map.add_trace(go.Choroplethmapbox(
+                geojson=counties_geojson,
+                locations=cdf["county_fips"],
+                z=cdf[color_col],
+                colorscale=cscale,
+                zmin=zmin, zmax=zmax,
+                marker_opacity=0.6,
+                marker_line_width=0.7,
+                marker_line_color="white",
+                colorbar=dict(title=color_title, x=0.01, len=0.55, thickness=14,
+                              tickfont=dict(size=11)),
+                text=cdf["hover_county"],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            ))
+
+            # Pantry scatter layers (one trace per org type → legend entries)
+            if show_pins and pantries_df is not None:
+                for org_type, color in ORG_COLORS.items():
+                    sub = pantries_df[pantries_df["org_type"] == org_type].copy()
+                    if sub.empty:
+                        continue
+                    snap_flag = sub["snap_enrollment_likely"].apply(
+                        lambda v: "Yes" if v else "No"
+                    )
+                    phone_str = sub["phone"].apply(
+                        lambda v: f"<br>Phone: {v}" if pd.notna(v) else ""
+                    )
+                    rating_str = sub["google_rating"].apply(
+                        lambda v: f"<br>Rating: {v:.1f}⭐" if pd.notna(v) else ""
+                    )
+                    sub["hover"] = (
+                        "<b>" + sub["name"].astype(str) + "</b><br>"
+                        + sub["org_type"].astype(str) + "<br>"
+                        + "SNAP Assist: " + snap_flag
+                        + phone_str + rating_str
+                    )
+                    fig_map.add_trace(go.Scattermapbox(
+                        lat=sub["latitude"],
+                        lon=sub["longitude"],
+                        mode="markers",
+                        marker=go.scattermapbox.Marker(size=7, color=color, opacity=0.85),
+                        text=sub["hover"],
+                        hovertemplate="%{text}<extra></extra>",
+                        name=org_type,
+                        showlegend=True,
+                    ))
+
+            fig_map.update_layout(
+                mapbox_style="open-street-map",
+                mapbox=dict(center=dict(lat=28.8, lon=-99.3), zoom=5.5),
+                height=610,
+                margin=dict(l=0, r=0, t=10, b=0),
+                legend=dict(
+                    orientation="v", yanchor="top", y=0.98,
+                    xanchor="right", x=0.99,
+                    bgcolor="rgba(255,255,255,0.88)",
+                    bordercolor="#ccc", borderwidth=1,
+                    font=dict(size=11),
+                ),
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
+            st.caption(
+                f"📍 {len(pantries_df):,} verified sites  "
+                "· Hover counties for gap analysis  "
+                "· Hover pins for site details  "
+                "· Zoom / pan to explore"
+            )
+        else:
+            st.warning("Map unavailable — could not load county GeoJSON.")
+
+    # ── TAB 2: COVERAGE GAPS ──────────────────────────────────────────────────
+    with tab_gaps:
+        st.markdown("#### Top 20 Priority Gap Counties")
+
+        # Gap score legend
+        gl1, gl2, gl3, gl4 = st.columns(4)
+        with gl1:
+            st.error("**Score 8–10+** \nZero pantry sites — county has no food distribution infrastructure")
+        with gl2:
+            st.warning("**Score 5–7** \nSerious gap — few sites, no SNAP assistance, or extreme overcrowding")
+        with gl3:
+            st.info("**Score 3–4** \nModerate gap — coverage exists but access or capacity is constrained")
+        with gl4:
+            st.success("**Score 0–2** \nRelatively well-served within the MHM service area")
+
+        top_gap = gdf.nlargest(20, score_col).copy()
+        top_gap["label"] = (
+            top_gap["county"] + " ("
+            + top_gap["region_name"].str.split("/").str[0].str.strip() + ")"
+        )
+        bar_colors = top_gap[score_col].apply(
+            lambda v: "#d73027" if v >= 8 else "#fc8d59" if v >= 5 else "#fee08b" if v >= 3 else "#91cf60"
+        )
+
+        fig_gap = go.Figure(go.Bar(
+            y=top_gap["label"][::-1],
+            x=top_gap[score_col][::-1],
+            orientation="h",
+            marker_color=bar_colors[::-1].tolist(),
+            text=top_gap[score_col][::-1].astype(int).astype(str),
+            textposition="outside",
+            customdata=top_gap[
+                ["eligible_individuals", "total_sites", "food_insecurity_pct", "snap_sites"]
+            ][::-1].fillna(-1).values,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Gap Score: %{x}<br>"
+                "SNAP Enrolled: %{customdata[0]:,.0f}<br>"
+                "Sites: %{customdata[1]:.0f}<br>"
+                "Food Insecurity: %{customdata[2]:.1f}%<br>"
+                "SNAP Assist Sites: %{customdata[3]:.0f}"
+                "<extra></extra>"
+            ),
+        ))
+        fig_gap.update_layout(
+            height=540, xaxis_title="Gap Score", xaxis_range=[0, 13],
+            margin=dict(l=175, r=70, t=20, b=30),
+        )
+        st.plotly_chart(fig_gap, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### Full 74-County Gap Table")
+
+        tbl = gdf[[
+            "county", "region_name", "eligible_individuals", "total_sites",
+            "snap_sites", "snap_enrolled_per_site", "food_insecurity_pct",
+            "pct_sites_open_wknd", "no_pantry", score_col,
+        ]].copy().sort_values(score_col, ascending=False)
+        tbl.columns = [
+            "County", "Region", "SNAP Enrolled", "Sites",
+            "SNAP Assist Sites", "Enrolled/Site", "Food Insecurity %",
+            "% Open Wknd", "No Sites", "Gap Score",
+        ]
+        tbl["SNAP Enrolled"]     = tbl["SNAP Enrolled"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+        tbl["Enrolled/Site"]     = tbl["Enrolled/Site"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+        tbl["Food Insecurity %"] = tbl["Food Insecurity %"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "—")
+        tbl["% Open Wknd"]       = tbl["% Open Wknd"].apply(lambda v: f"{v:.0f}%" if pd.notna(v) else "—")
+        tbl["No Sites"]          = tbl["No Sites"].apply(lambda v: "Yes" if v else "")
+
+        search = st.text_input(
+            "Search counties or regions",
+            placeholder="e.g. Bexar, RGV, West TX, San Antonio...",
+        )
+        if search.strip():
+            mask = (
+                tbl["County"].str.contains(search.strip(), case=False, na=False)
+                | tbl["Region"].str.contains(search.strip(), case=False, na=False)
+            )
+            tbl_show = tbl[mask]
+            st.caption(f"{len(tbl_show)} of 74 counties shown")
+        else:
+            tbl_show = tbl
+
+        st.dataframe(tbl_show, use_container_width=True, hide_index=True)
+
+    # ── TAB 3: REGIONAL SUMMARY ────────────────────────────────────────────────
+    with tab_region:
+        st.markdown("#### Regional Food Access Summary")
+
+        reg = gdf.groupby("region_name").agg(
+            counties=("county", "count"),
+            total_sites=("total_sites", "sum"),
+            snap_sites=("snap_sites", "sum"),
+            enrolled=("eligible_individuals", "sum"),
+            no_pantry=("no_pantry", "sum"),
+            no_snap_site=("no_snap_site", "sum"),
+            avg_food_insecurity=("food_insecurity_pct", "mean"),
+            avg_gap=(score_col, "mean"),
+        ).reset_index()
+        reg["enrolled_per_site"] = (
+            reg["enrolled"] / reg["total_sites"].replace(0, float("nan"))
+        ).round(0)
+        reg = reg.sort_values("avg_gap", ascending=False)
+
+        for _, row in reg.iterrows():
+            with st.expander(
+                f"**{row['region_name']}**  —  "
+                f"avg gap {row['avg_gap']:.1f}  ·  "
+                f"avg FI {row['avg_food_insecurity']:.1f}%  ·  "
+                f"{int(row['total_sites'])} sites  ·  "
+                f"{int(row['enrolled']):,} enrolled",
+                expanded=False,
+            ):
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Counties", int(row["counties"]))
+                    st.metric("Pantry Sites", int(row["total_sites"]))
+                with c2:
+                    st.metric("SNAP Enrolled", f"{int(row['enrolled']):,}")
+                    st.metric("SNAP Assist Sites", int(row["snap_sites"]))
+                with c3:
+                    eps = row["enrolled_per_site"]
+                    st.metric("Enrolled / Site", f"{eps:,.0f}" if pd.notna(eps) else "—")
+                    st.metric("Counties w/o Sites", int(row["no_pantry"]))
+                with c4:
+                    st.metric("Avg Food Insecurity", f"{row['avg_food_insecurity']:.1f}%")
+                    st.metric("Counties w/o SNAP Site", int(row["no_snap_site"]))
+
+        st.markdown("---")
+        st.markdown("#### Organization Type Distribution")
+
+        org_counts = pantries_df["org_type"].value_counts().reset_index()
+        org_counts.columns = ["Org Type", "Count"]
+        fig_org = go.Figure(go.Bar(
+            x=org_counts["Count"],
+            y=org_counts["Org Type"],
+            orientation="h",
+            marker_color=[ORG_COLORS.get(t, "#888888") for t in org_counts["Org Type"]],
+            text=org_counts["Count"],
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>%{x} sites<extra></extra>",
+        ))
+        fig_org.update_layout(
+            height=310, margin=dict(l=185, r=60, t=10, b=30),
+            xaxis_title="Sites",
+        )
+        st.plotly_chart(fig_org, use_container_width=True)
+
+        st.markdown("#### Access Quality")
+        aq1, aq2, aq3, aq4 = st.columns(4)
+        with aq1:
+            n = int(pantries_df["open_weekends"].sum())
+            pct = pantries_df["open_weekends"].mean() * 100
+            st.metric("Open Weekends", f"{n} ({pct:.0f}%)")
+        with aq2:
+            n = int(pantries_df["open_evenings"].sum())
+            pct = pantries_df["open_evenings"].mean() * 100
+            st.metric("Open Evenings", f"{n} ({pct:.0f}%)")
+        with aq3:
+            n = int(pantries_df["snap_enrollment_likely"].sum())
+            pct = pantries_df["snap_enrollment_likely"].mean() * 100
+            st.metric("SNAP Assist", f"{n} ({pct:.0f}%)")
+        with aq4:
+            rated = pantries_df["google_rating"].notna()
+            avg_r = pantries_df.loc[rated, "google_rating"].mean()
+            st.metric("Avg Google Rating", f"{avg_r:.1f}⭐ ({rated.sum()} sites)")
+
+        st.info(
+            "**Grant-making implication:** RGV/Coastal has the highest food insecurity (avg 17.8%) and "
+            "largest enrolled population (460K) but 10 counties with no SNAP assist site. "
+            "West TX has the worst pantry-to-population ratio and 3 zero-site counties. "
+            "Both regions should be prioritized for new site development and SNAP navigator grants."
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: ADMIN BURDEN ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════════
 if section == "Admin Burden Analysis":
     st.title("Administrative Burden Analysis")
