@@ -570,43 +570,37 @@ elif section == "Food Access Map":
 
         st.markdown("---")
 
-        # Map controls + gap score explanation
-        ctrl1, ctrl2 = st.columns([2, 1])
-        with ctrl1:
-            county_color_opt = st.radio(
-                "County shading",
-                ["Gap Score", "Food Insecurity %", "SNAP Enrolled / Site"],
-                horizontal=True,
-            )
-        with ctrl2:
-            show_pins = st.checkbox("Show pantry pins", value=True)
-
-        # Dynamic explanation + snapshot for the selected metric
+        # County shading + explanation (full width above the map)
+        county_color_opt = st.radio(
+            "County shading",
+            ["Gap Score", "Food Insecurity %", "SNAP Enrolled / Site"],
+            horizontal=True,
+        )
         _gap_info = {
             "Gap Score": (
                 "**Gap Score** (0–10+) is a composite index of how underserved a county is. "
-                "Points are awarded for: no pantry sites (+4), too few sites for the enrolled population (+2), "
-                "no SNAP enrollment assistance (+2), more than 2,000 SNAP participants per site (+2), "
-                "less than 15% weekend coverage (+1), and food insecurity rate above 20% (+1).",
-                f"Critical (score \u22658): **{int((gdf[score_col] >= 8).sum())} counties**  \u00b7  "
-                f"High priority (\u22655): **{int((gdf[score_col] >= 5).sum())} counties**  \u00b7  "
+                "Points awarded: no pantry sites (+4), too few sites for enrolled population (+2), "
+                "no SNAP enrollment assistance (+2), >2,000 SNAP participants per site (+2), "
+                "<15% weekend coverage (+1), food insecurity above 20% (+1).",
+                f"Critical (\u22658): **{int((gdf[score_col] >= 8).sum())} counties**  \u00b7  "
+                f"High (\u22655): **{int((gdf[score_col] >= 5).sum())} counties**  \u00b7  "
                 f"Well-served (0): **{int((gdf[score_col] == 0).sum())} counties**",
             ),
             "Food Insecurity %": (
-                "**Food Insecurity Rate** is the share of residents who lack consistent access to enough food "
-                "(County Health Rankings 2024). The U.S. average is ~13%; rates above 20% signal severe community need.",
+                "**Food Insecurity Rate** — share of residents who lack consistent access to enough food "
+                "(County Health Rankings 2024). U.S. avg ~13%; above 20% signals severe community need.",
                 f"Service area avg: **{gdf['food_insecurity_pct'].mean():.1f}%**  \u00b7  "
                 f"Above 20%: **{int((gdf['food_insecurity_pct'] > 20).sum())} counties**  \u00b7  "
-                f"Highest: **{gdf.nlargest(1, 'food_insecurity_pct')['county'].values[0]} "
+                f"Highest: **{gdf.nlargest(1,'food_insecurity_pct')['county'].values[0]} "
                 f"({gdf['food_insecurity_pct'].max():.1f}%)**",
             ),
             "SNAP Enrolled / Site": (
-                "**SNAP Enrolled per Site** measures how many SNAP participants each pantry site must serve on average. "
-                "Anything above ~1,000 suggests the site is overstretched; above 2,000 is a critical capacity gap. "
-                "Counties with no sites are shown as 0.",
-                f"Median: **{gdf['snap_enrolled_per_site'].median():,.0f} enrolled/site**  \u00b7  "
+                "**SNAP Enrolled per Site** — how many SNAP participants each pantry site must serve. "
+                "Above ~1,000 = overstretched; above 2,000 = critical capacity gap. "
+                "Counties with no sites shown as 0.",
+                f"Median: **{gdf['snap_enrolled_per_site'].median():,.0f}/site**  \u00b7  "
                 f"Above 2,000/site: **{int((gdf['snap_enrolled_per_site'] > 2000).sum())} counties**  \u00b7  "
-                f"No sites at all: **{int((gap_df['total_sites'] == 0).sum())} counties**",
+                f"No sites: **{int((gap_df['total_sites'] == 0).sum())} counties**",
             ),
         }
         _desc, _snapshot = _gap_info[county_color_opt]
@@ -614,88 +608,213 @@ elif section == "Food Access Map":
         st.info(_snapshot)
 
         color_cfg = {
-            "Gap Score":             (score_col,                    "Gap Score",    "YlOrRd", 0, 10),
-            "Food Insecurity %":     ("food_insecurity_pct",        "FI Rate %",    "YlOrRd", 8, 28),
-            "SNAP Enrolled / Site":  ("snap_enrolled_per_site_disp","Enrolled/Site","YlOrRd", 0, 4000),
+            "Gap Score":             (score_col,                     "Gap Score",    "YlOrRd", 0, 10),
+            "Food Insecurity %":     ("food_insecurity_pct",         "FI Rate %",    "YlOrRd", 8, 28),
+            "SNAP Enrolled / Site":  ("snap_enrolled_per_site_disp", "Enrolled/Site","YlOrRd", 0, 4000),
         }
         color_col, color_title, cscale, zmin, zmax = color_cfg[county_color_opt]
 
-        if counties_geojson:
-            cdf = gdf[gdf["county_fips"].notna()].copy()
+        # Add region to pantries for filtering
+        _cty_to_region = gap_df[["county","region_name"]].set_index("county")["region_name"].to_dict()
+        _pf = pantries_df.copy()
+        _pf["region_name"] = _pf["primary_county"].map(_cty_to_region)
 
-            fig_map = go.Figure()
+        st.markdown("")
+        filt_col, map_col = st.columns([1, 3])
 
-            # County fill layer
-            fig_map.add_trace(go.Choroplethmapbox(
-                geojson=counties_geojson,
-                locations=cdf["county_fips"],
-                z=cdf[color_col],
-                colorscale=cscale,
-                zmin=zmin, zmax=zmax,
-                marker_opacity=0.6,
-                marker_line_width=0.7,
-                marker_line_color="white",
-                colorbar=dict(title=color_title, x=0.01, len=0.55, thickness=14,
-                              tickfont=dict(size=11)),
-                text=cdf["hover_county"],
-                hovertemplate="%{text}<extra></extra>",
-                showlegend=False,
-            ))
+        # ── Filter panel ──────────────────────────────────────────────────────
+        with filt_col:
+            st.markdown("#### Filter Sites")
 
-            # Pantry scatter layers (one trace per org type → legend entries)
-            if show_pins and pantries_df is not None:
-                for org_type, color in ORG_COLORS.items():
-                    sub = pantries_df[pantries_df["org_type"] == org_type].copy()
-                    if sub.empty:
-                        continue
-                    snap_flag = sub["snap_enrollment_likely"].apply(
-                        lambda v: "Yes" if v else "No"
-                    )
-                    phone_str = sub["phone"].apply(
-                        lambda v: f"<br>Phone: {v}" if pd.notna(v) else ""
-                    )
-                    rating_str = sub["google_rating"].apply(
-                        lambda v: f"<br>Rating: {v:.1f}⭐" if pd.notna(v) else ""
-                    )
-                    sub["hover"] = (
-                        "<b>" + sub["name"].astype(str) + "</b><br>"
-                        + sub["org_type"].astype(str) + "<br>"
-                        + "SNAP Assist: " + snap_flag
-                        + phone_str + rating_str
-                    )
-                    fig_map.add_trace(go.Scattermapbox(
-                        lat=sub["latitude"],
-                        lon=sub["longitude"],
-                        mode="markers",
-                        marker=go.scattermapbox.Marker(size=7, color=color, opacity=0.85),
-                        text=sub["hover"],
-                        hovertemplate="%{text}<extra></extra>",
-                        name=org_type,
-                        showlegend=True,
-                    ))
+            show_pins = st.checkbox("Show pantry pins", value=True)
 
-            fig_map.update_layout(
-                mapbox_style="open-street-map",
-                mapbox=dict(center=dict(lat=28.8, lon=-99.3), zoom=5.5),
-                height=610,
-                margin=dict(l=0, r=0, t=10, b=0),
-                legend=dict(
-                    orientation="v", yanchor="top", y=0.98,
-                    xanchor="right", x=0.99,
-                    bgcolor="rgba(255,255,255,0.88)",
-                    bordercolor="#ccc", borderwidth=1,
-                    font=dict(size=11),
-                ),
+            sel_regions = st.multiselect(
+                "Region",
+                options=sorted(_pf["region_name"].dropna().unique().tolist()),
+                placeholder="All regions...",
             )
-            st.plotly_chart(fig_map, use_container_width=True)
-            st.caption(
-                f"📍 {len(pantries_df):,} verified sites  "
-                "· Hover counties for gap analysis  "
-                "· Hover pins for site details  "
-                "· Zoom / pan to explore"
+            sel_counties = st.multiselect(
+                "County",
+                options=sorted(_pf["primary_county"].dropna().unique().tolist()),
+                placeholder="All counties...",
             )
-        else:
-            st.warning("Map unavailable — could not load county GeoJSON.")
+            sel_types = st.multiselect(
+                "Org type",
+                options=list(ORG_COLORS.keys()),
+                placeholder="All types...",
+            )
+
+            st.markdown("**Access**")
+            filt_wknd = st.checkbox("Open weekends")
+            filt_eve  = st.checkbox("Open evenings")
+            filt_snap = st.checkbox("SNAP enrollment assist")
+
+            st.markdown("**Contact info**")
+            filt_phone   = st.checkbox("Has phone number")
+            filt_website = st.checkbox("Has website")
+
+            st.markdown("**Pin size**")
+            pin_size_opt = st.radio(
+                "pin_size", ["Uniform", "By review count"],
+                horizontal=True, label_visibility="collapsed",
+                help="Scale pins by Google review volume — a rough proxy for site visibility and traffic.",
+            )
+
+            # Apply filters
+            filt = _pf.copy()
+            if sel_regions:
+                filt = filt[filt["region_name"].isin(sel_regions)]
+            if sel_counties:
+                filt = filt[filt["primary_county"].isin(sel_counties)]
+            if sel_types:
+                filt = filt[filt["org_type"].isin(sel_types)]
+            if filt_wknd:
+                filt = filt[filt["open_weekends"] == 1]
+            if filt_eve:
+                filt = filt[filt["open_evenings"] == 1]
+            if filt_snap:
+                filt = filt[filt["snap_enrollment_likely"] == 1]
+            if filt_phone:
+                filt = filt[filt["phone"].notna()]
+            if filt_website:
+                filt = filt[filt["website"].notna()]
+
+            n_match = len(filt)
+            any_filter = bool(sel_regions or sel_counties or sel_types or
+                              filt_wknd or filt_eve or filt_snap or filt_phone or filt_website)
+            st.metric(
+                "Matching Sites", f"{n_match:,}",
+                delta=f"of {len(pantries_df):,} total" if any_filter else "no filters active",
+                delta_color="off",
+            )
+
+        # ── Map ──────────────────────────────────────────────────────────────
+        with map_col:
+            if counties_geojson:
+                cdf = gdf[gdf["county_fips"].notna()].copy()
+                fig_map = go.Figure()
+
+                fig_map.add_trace(go.Choroplethmapbox(
+                    geojson=counties_geojson,
+                    locations=cdf["county_fips"],
+                    z=cdf[color_col],
+                    colorscale=cscale,
+                    zmin=zmin, zmax=zmax,
+                    marker_opacity=0.6,
+                    marker_line_width=0.7,
+                    marker_line_color="white",
+                    colorbar=dict(title=color_title, x=0.01, len=0.55, thickness=14,
+                                  tickfont=dict(size=11)),
+                    text=cdf["hover_county"],
+                    hovertemplate="%{text}<extra></extra>",
+                    showlegend=False,
+                ))
+
+                if show_pins and len(filt) > 0:
+                    types_in_filter = filt["org_type"].unique()
+                    for org_type, color in ORG_COLORS.items():
+                        if org_type not in types_in_filter:
+                            continue
+                        sub = filt[filt["org_type"] == org_type].copy()
+                        if sub.empty:
+                            continue
+
+                        if pin_size_opt == "By review count":
+                            rc = sub["google_review_count"].fillna(1).clip(lower=1)
+                            _max = rc.max() if rc.max() > 1 else 2
+                            sizes = (np.log1p(rc) / np.log1p(_max) * 14 + 5).clip(5, 20).tolist()
+                        else:
+                            sizes = 8
+
+                        wknd_tag = sub["open_weekends"].apply(lambda v: " · wknds" if v else "")
+                        eve_tag  = sub["open_evenings"].apply(lambda v: " · eves"  if v else "")
+                        snap_tag = sub["snap_enrollment_likely"].apply(lambda v: "Yes" if v else "No")
+                        ph_str   = sub["phone"].apply(lambda v: f"<br>Phone: {v}" if pd.notna(v) else "")
+                        rt_str   = sub["google_rating"].apply(lambda v: f"<br>Rating: {v:.1f}" if pd.notna(v) else "")
+                        sub["hover"] = (
+                            "<b>" + sub["name"].astype(str) + "</b><br>"
+                            + sub["org_type"].astype(str) + wknd_tag + eve_tag + "<br>"
+                            + "SNAP Assist: " + snap_tag + ph_str + rt_str
+                        )
+                        fig_map.add_trace(go.Scattermapbox(
+                            lat=sub["latitude"],
+                            lon=sub["longitude"],
+                            mode="markers",
+                            marker=go.scattermapbox.Marker(size=sizes, color=color, opacity=0.85),
+                            text=sub["hover"],
+                            hovertemplate="%{text}<extra></extra>",
+                            name=org_type,
+                            showlegend=True,
+                        ))
+
+                fig_map.update_layout(
+                    mapbox_style="open-street-map",
+                    mapbox=dict(center=dict(lat=28.8, lon=-99.3), zoom=5.5),
+                    height=600,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    legend=dict(
+                        orientation="v", yanchor="top", y=0.98,
+                        xanchor="right", x=0.99,
+                        bgcolor="rgba(255,255,255,0.88)",
+                        bordercolor="#ccc", borderwidth=1,
+                        font=dict(size=11),
+                    ),
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+                st.caption(
+                    f"Showing {n_match:,} sites  "
+                    "· Hover counties for gap data  "
+                    "· Hover pins for site details  "
+                    "· Zoom / pan to explore"
+                )
+            else:
+                st.warning("Map unavailable — could not load county GeoJSON.")
+
+        # ── Matching sites table (full width) ─────────────────────────────────
+        with st.expander(
+            f"View {n_match:,} matching sites" + (" — filtered" if any_filter else " — all sites"),
+            expanded=False,
+        ):
+            if len(filt) == 0:
+                st.info("No sites match the current filters.")
+            else:
+                results = filt[[
+                    "primary_county", "region_name", "name", "org_type",
+                    "snap_enrollment_likely", "open_weekends", "open_evenings",
+                    "days_open_count", "phone", "website", "hours_text",
+                    "google_review_count", "google_rating", "address",
+                ]].copy().sort_values(["primary_county", "org_type", "name"]).reset_index(drop=True)
+                results.columns = [
+                    "County", "Region", "Name", "Type",
+                    "SNAP Assist", "Open Wknd", "Open Eve",
+                    "Days/Wk", "Phone", "Website", "Hours",
+                    "Reviews", "Rating", "Address",
+                ]
+                results["SNAP Assist"] = results["SNAP Assist"].apply(lambda v: "Yes" if v else "")
+                results["Open Wknd"]   = results["Open Wknd"].apply(lambda v: "Yes" if v else "")
+                results["Open Eve"]    = results["Open Eve"].apply(lambda v: "Yes" if v else "")
+                results["Days/Wk"]     = results["Days/Wk"].apply(lambda v: f"{int(v)}" if pd.notna(v) else "—")
+                results["Reviews"]     = results["Reviews"].apply(lambda v: f"{int(v):,}" if pd.notna(v) else "—")
+                results["Rating"]      = results["Rating"].apply(lambda v: f"{v:.1f}" if pd.notna(v) else "—")
+
+                st.dataframe(results, use_container_width=True, hide_index=True)
+
+                csv_out = filt[[
+                    "primary_county", "region_name", "name", "org_type",
+                    "snap_enrollment_likely", "open_weekends", "open_evenings",
+                    "days_open_count", "phone", "website", "address", "google_maps_url",
+                ]].copy()
+                csv_out.columns = [
+                    "county", "region", "name", "org_type",
+                    "snap_enrollment_assist", "open_weekends", "open_evenings",
+                    "days_open_per_week", "phone", "website", "address", "google_maps_url",
+                ]
+                st.download_button(
+                    label=f"Download {n_match:,} sites as CSV",
+                    data=csv_out.to_csv(index=False),
+                    file_name="mhm_pantry_results.csv",
+                    mime="text/csv",
+                )
 
     # ── TAB 2: COVERAGE GAPS ──────────────────────────────────────────────────
     with tab_gaps:
@@ -766,19 +885,26 @@ elif section == "Food Access Map":
         tbl["% Open Wknd"]       = tbl["% Open Wknd"].apply(lambda v: f"{v:.0f}%" if pd.notna(v) else "—")
         tbl["No Sites"]          = tbl["No Sites"].apply(lambda v: "Yes" if v else "")
 
-        search = st.text_input(
-            "Search counties or regions",
-            placeholder="e.g. Bexar, RGV, West TX, San Antonio...",
-        )
-        if search.strip():
-            mask = (
-                tbl["County"].str.contains(search.strip(), case=False, na=False)
-                | tbl["Region"].str.contains(search.strip(), case=False, na=False)
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            filter_counties = st.multiselect(
+                "Filter to specific counties (leave blank = all)",
+                options=sorted(tbl["County"].tolist()),
+                placeholder="Type or select counties...",
             )
-            tbl_show = tbl[mask]
+        with fc2:
+            filter_regions = st.multiselect(
+                "Filter by region",
+                options=sorted(tbl["Region"].dropna().unique().tolist()),
+                placeholder="All regions...",
+            )
+        tbl_show = tbl.copy()
+        if filter_counties:
+            tbl_show = tbl_show[tbl_show["County"].isin(filter_counties)]
+        if filter_regions:
+            tbl_show = tbl_show[tbl_show["Region"].isin(filter_regions)]
+        if filter_counties or filter_regions:
             st.caption(f"{len(tbl_show)} of 74 counties shown")
-        else:
-            tbl_show = tbl
 
         st.dataframe(tbl_show, use_container_width=True, hide_index=True)
 
