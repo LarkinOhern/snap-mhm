@@ -81,7 +81,12 @@ def load_geojson():
 @st.cache_data
 def load_pantries():
     try:
-        return pd.read_excel("food_pantry_catalog_clean.xlsx")
+        df = pd.read_excel("food_pantry_catalog_clean.xlsx")
+        if "snap_source" not in df.columns:
+            df["snap_source"] = df["snap_enrollment_likely"].apply(
+                lambda v: "heuristic" if v else "none"
+            )
+        return df
     except Exception:
         return None
 
