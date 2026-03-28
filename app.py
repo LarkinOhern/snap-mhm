@@ -747,9 +747,29 @@ elif section == "Food Access Map":
                             showlegend=True,
                         ))
 
+                # Auto-zoom to filtered sites when a filter is active
+                # Clamp to Texas bounds first to exclude any mis-geocoded outliers
+                _TX_LAT = (25.5, 36.5)
+                _TX_LON = (-106.5, -93.5)
+                _geo = filt[
+                    filt["latitude"].between(*_TX_LAT) &
+                    filt["longitude"].between(*_TX_LON)
+                ] if len(filt) > 0 else filt
+
+                if any_filter and len(_geo) > 0:
+                    _lat_lo, _lat_hi = _geo["latitude"].min(), _geo["latitude"].max()
+                    _lon_lo, _lon_hi = _geo["longitude"].min(), _geo["longitude"].max()
+                    _clat = (_lat_lo + _lat_hi) / 2
+                    _clon = (_lon_lo + _lon_hi) / 2
+                    # span in degrees with padding; account for wider-than-tall map
+                    _span = max((_lat_hi - _lat_lo), (_lon_hi - _lon_lo) * 0.7, 0.05) * 1.5
+                    _zoom = float(np.clip(np.log2(360 / _span), 4.0, 12.0))
+                else:
+                    _clat, _clon, _zoom = 28.8, -99.3, 5.5
+
                 fig_map.update_layout(
                     mapbox_style="open-street-map",
-                    mapbox=dict(center=dict(lat=28.8, lon=-99.3), zoom=5.5),
+                    mapbox=dict(center=dict(lat=_clat, lon=_clon), zoom=_zoom),
                     height=600,
                     margin=dict(l=0, r=0, t=10, b=0),
                     legend=dict(
