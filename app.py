@@ -736,7 +736,7 @@ elif section == "Food Access Map":
                         def _snap_tag(r):
                             if r.get("snap_source") == "CPP verified":
                                 return "Yes (CPP verified)"
-                            return "Yes" if r["snap_enrollment_likely"] else "No"
+                            return "Likely" if r["snap_enrollment_likely"] else "No"
                         snap_tag = sub.apply(_snap_tag, axis=1)
                         ph_str   = sub["phone"].apply(lambda v: f"<br>Phone: {v}" if pd.notna(v) else "")
                         rt_str   = sub["google_rating"].apply(lambda v: f"<br>Rating: {v:.1f}" if pd.notna(v) else "")
@@ -822,7 +822,7 @@ elif section == "Food Access Map":
                 def _snap_label(r):
                     if r["_snap_src"] == "CPP verified":
                         return "Yes (CPP verified)"
-                    return "Yes" if r["_snap_flag"] else ""
+                    return "Likely" if r["_snap_flag"] else ""
                 results["SNAP Assist"] = results.apply(_snap_label, axis=1)
                 results = results.drop(columns=["_snap_flag", "_snap_src"])
                 results = results[["County", "Region", "Name", "Type", "SNAP Assist",
